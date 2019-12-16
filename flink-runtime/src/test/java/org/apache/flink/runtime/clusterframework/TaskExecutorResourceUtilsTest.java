@@ -18,23 +18,28 @@
 
 package org.apache.flink.runtime.clusterframework;
 
+import org.apache.flink.api.common.resources.CPUResource;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
+import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.testutils.CommonTestUtils;
+import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
@@ -52,6 +57,7 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 	private static final MemorySize TOTAL_PROCESS_MEM_SIZE = MemorySize.parse("1536m");
 
 	private static final TaskExecutorResourceSpec TM_RESOURCE_SPEC = new TaskExecutorResourceSpec(
+		new CPUResource(1.0),
 		MemorySize.parse("1m"),
 		MemorySize.parse("2m"),
 		MemorySize.parse("3m"),
@@ -59,8 +65,17 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 		MemorySize.parse("5m"),
 		MemorySize.parse("6m"),
 		MemorySize.parse("7m"),
-		MemorySize.parse("8m"),
-		MemorySize.parse("9m"));
+		MemorySize.parse("8m"));
+
+	private static final int NUMBER_OF_SLOTS = 2;
+
+	private static final ResourceProfile DEFAULT_RESOURCE_PROFILE = ResourceProfile.newBuilder()
+		.setCpuCores(new CPUResource(0.5))
+		.setTaskHeapMemory(MemorySize.parse("3m").divide(NUMBER_OF_SLOTS))
+		.setTaskOffHeapMemory(MemorySize.parse("2m"))
+		.setShuffleMemory(MemorySize.parse("5m").divide(NUMBER_OF_SLOTS))
+		.setManagedMemory(MemorySize.parse("3m"))
+		.build();
 
 	private static Map<String, String> oldEnvVariables;
 
@@ -81,6 +96,7 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 		String dynamicConfigsStr = TaskExecutorResourceUtils.generateDynamicConfigsStr(TM_RESOURCE_SPEC);
 		Map<String, String> configs = ConfigurationUtils.parseTmResourceDynamicConfigs(dynamicConfigsStr);
 
+		assertThat(new CPUResource(Double.valueOf(configs.get(TaskManagerOptions.CPU_CORES.key()))), is(TM_RESOURCE_SPEC.getCpuCores()));
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.FRAMEWORK_HEAP_MEMORY.key())), is(TM_RESOURCE_SPEC.getFrameworkHeapSize()));
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.FRAMEWORK_OFF_HEAP_MEMORY.key())), is(TM_RESOURCE_SPEC.getFrameworkOffHeapMemorySize()));
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.TASK_HEAP_MEMORY.key())), is(TM_RESOURCE_SPEC.getTaskHeapSize()));
@@ -88,7 +104,6 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.SHUFFLE_MEMORY_MAX.key())), is(TM_RESOURCE_SPEC.getShuffleMemSize()));
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.SHUFFLE_MEMORY_MIN.key())), is(TM_RESOURCE_SPEC.getShuffleMemSize()));
 		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.MANAGED_MEMORY_SIZE.key())), is(TM_RESOURCE_SPEC.getManagedMemorySize()));
-		assertThat(MemorySize.parse(configs.get(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_SIZE.key())), is(TM_RESOURCE_SPEC.getOffHeapManagedMemorySize()));
 	}
 
 	@Test
@@ -96,10 +111,34 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 		String jvmParamsStr = TaskExecutorResourceUtils.generateJvmParametersStr(TM_RESOURCE_SPEC);
 		Map<String, String> configs = ConfigurationUtils.parseTmResourceJvmParams(jvmParamsStr);
 
-		assertThat(MemorySize.parse(configs.get("-Xmx")), is(TM_RESOURCE_SPEC.getFrameworkHeapSize().add(TM_RESOURCE_SPEC.getTaskHeapSize()).add(TM_RESOURCE_SPEC.getOnHeapManagedMemorySize())));
-		assertThat(MemorySize.parse(configs.get("-Xms")), is(TM_RESOURCE_SPEC.getFrameworkHeapSize().add(TM_RESOURCE_SPEC.getTaskHeapSize()).add(TM_RESOURCE_SPEC.getOnHeapManagedMemorySize())));
+		assertThat(MemorySize.parse(configs.get("-Xmx")), is(TM_RESOURCE_SPEC.getFrameworkHeapSize().add(TM_RESOURCE_SPEC.getTaskHeapSize())));
+		assertThat(MemorySize.parse(configs.get("-Xms")), is(TM_RESOURCE_SPEC.getFrameworkHeapSize().add(TM_RESOURCE_SPEC.getTaskHeapSize())));
 		assertThat(MemorySize.parse(configs.get("-XX:MaxDirectMemorySize=")), is(TM_RESOURCE_SPEC.getFrameworkOffHeapMemorySize().add(TM_RESOURCE_SPEC.getTaskOffHeapSize()).add(TM_RESOURCE_SPEC.getShuffleMemSize())));
 		assertThat(MemorySize.parse(configs.get("-XX:MaxMetaspaceSize=")), is(TM_RESOURCE_SPEC.getJvmMetaspaceSize()));
+	}
+
+	@Test
+	public void testConfigCpuCores() {
+		final double cpuCores = 1.0;
+
+		Configuration conf = new Configuration();
+		conf.setDouble(TaskManagerOptions.CPU_CORES, cpuCores);
+
+		validateInAllConfigurations(conf, taskExecutorResourceSpec -> assertThat(taskExecutorResourceSpec.getCpuCores(), is(new CPUResource(cpuCores))));
+	}
+
+	@Test
+	public void testConfigNoCpuCores() {
+		Configuration conf = new Configuration();
+		conf.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, 3);
+		validateInAllConfigurations(conf, taskExecutorResourceSpec -> assertThat(taskExecutorResourceSpec.getCpuCores(), is(new CPUResource(3.0))));
+	}
+
+	@Test
+	public void testConfigNegativeCpuCores() {
+		Configuration conf = new Configuration();
+		conf.setDouble(TaskManagerOptions.CPU_CORES, -0.1f);
+		validateFailInAllConfigurations(conf);
 	}
 
 	@Test
@@ -300,83 +339,6 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 	}
 
 	@Test
-	public void testConfigOffHeapManagedMemorySize() {
-		final MemorySize offHeapSize = MemorySize.parse("20m");
-
-		Configuration conf = new Configuration();
-		conf.setString(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_SIZE, offHeapSize.getMebiBytes() + "m");
-
-		validateInAllConfigurations(conf, taskExecutorResourceSpec -> {
-			assertThat(taskExecutorResourceSpec.getOffHeapManagedMemorySize(), is(offHeapSize));
-			assertThat(taskExecutorResourceSpec.getOnHeapManagedMemorySize(), is(taskExecutorResourceSpec.getManagedMemorySize().subtract(taskExecutorResourceSpec.getOffHeapManagedMemorySize())));
-		});
-	}
-
-	@Test
-	public void testConfigOffHeapManagedMemorySizeFailure() {
-		final MemorySize offHeapSize = MemorySize.parse("1t");
-
-		Configuration conf = new Configuration();
-		conf.setString(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_SIZE, offHeapSize.getMebiBytes() + "m");
-
-		validateFailInAllConfigurations(conf);
-	}
-
-	@Test
-	public void testConfigOffHeapManagedMemoryFraction() {
-		final float fraction = 0.5f;
-
-		Configuration conf = new Configuration();
-		conf.setFloat(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_FRACTION, fraction);
-
-		validateInAllConfigurations(conf, taskExecutorResourceSpec -> {
-			assertThat(taskExecutorResourceSpec.getOffHeapManagedMemorySize(), is(taskExecutorResourceSpec.getManagedMemorySize().multiply(fraction)));
-			assertThat(taskExecutorResourceSpec.getOnHeapManagedMemorySize(), is(taskExecutorResourceSpec.getManagedMemorySize().subtract(taskExecutorResourceSpec.getOffHeapManagedMemorySize())));
-		});
-	}
-
-	@Test
-	public void testConfigOffHeapManagedMemoryFractionFailure() {
-		Configuration conf = new Configuration();
-		conf.setFloat(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_FRACTION, 1.1f);
-		validateFailInAllConfigurations(conf);
-	}
-
-	@Test
-	public void testConfigOffHeapManagedMemoryLegacyOffHeap() {
-		@SuppressWarnings("deprecation")
-		final ConfigOption<Boolean> legacyOption = TaskManagerOptions.MEMORY_OFF_HEAP;
-
-		// negative off-heap managed memory fraction means not configured, if off-heap managed memory size is also not configured,
-		// legacy 'taskmanager.memory.off-heap' will be used to set managed memory to either all on-heap or all off-heap
-		Configuration conf = new Configuration();
-		conf.setFloat(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_FRACTION, -1.0f);
-
-		conf.setBoolean(legacyOption, true);
-		validateInAllConfigurations(conf, taskExecutorResourceSpec -> {
-			assertThat(taskExecutorResourceSpec.getOffHeapManagedMemorySize(), is(taskExecutorResourceSpec.getManagedMemorySize()));
-			assertThat(taskExecutorResourceSpec.getOnHeapManagedMemorySize(), is(MemorySize.ZERO));
-		});
-	}
-
-	@Test
-	public void testConfigOffHeapManagedMemoryLegacyOnHeap() {
-		@SuppressWarnings("deprecation")
-		final ConfigOption<Boolean> legacyOption = TaskManagerOptions.MEMORY_OFF_HEAP;
-
-		// negative off-heap managed memory fraction means not configured, if off-heap managed memory size is also not configured,
-		// legacy 'taskmanager.memory.off-heap' will be used to set managed memory to either all on-heap or all off-heap
-		Configuration conf = new Configuration();
-		conf.setFloat(TaskManagerOptions.MANAGED_MEMORY_OFFHEAP_FRACTION, -1.0f);
-
-		conf.setBoolean(legacyOption, false);
-		validateInAllConfigurations(conf, taskExecutorResourceSpec -> {
-			assertThat(taskExecutorResourceSpec.getOnHeapManagedMemorySize(), is(taskExecutorResourceSpec.getManagedMemorySize()));
-			assertThat(taskExecutorResourceSpec.getOffHeapManagedMemorySize(), is(MemorySize.ZERO));
-		});
-	}
-
-	@Test
 	public void testConfigJvmMetaspaceSize() {
 		final MemorySize jvmMetaspaceSize = MemorySize.parse("50m");
 
@@ -552,6 +514,32 @@ public class TaskExecutorResourceUtilsTest extends TestLogger {
 		conf.setString(TaskManagerOptions.JVM_OVERHEAD_MAX, jvmOverhead.getMebiBytes() + "m");
 
 		validateFail(conf);
+	}
+
+	@Test
+	public void testCreateDefaultWorkerSlotProfiles() {
+		assertThat(
+			TaskExecutorResourceUtils.createDefaultWorkerSlotProfiles(TM_RESOURCE_SPEC, NUMBER_OF_SLOTS),
+			is(Arrays.asList(DEFAULT_RESOURCE_PROFILE, DEFAULT_RESOURCE_PROFILE)));
+	}
+
+	@Test
+	public void testGenerateDefaultSlotProfile() {
+		assertThat(
+			TaskExecutorResourceUtils.generateDefaultSlotResourceProfile(TM_RESOURCE_SPEC, NUMBER_OF_SLOTS),
+			is(DEFAULT_RESOURCE_PROFILE));
+	}
+
+	@Test
+	public void testExceptionShouldContainRequiredConfigOptions() {
+		try {
+			TaskExecutorResourceUtils.resourceSpecFromConfig(new Configuration());
+		} catch (final IllegalConfigurationException e) {
+			assertThat(e.getMessage(), containsString(TaskManagerOptions.TASK_HEAP_MEMORY.key()));
+			assertThat(e.getMessage(), containsString(TaskManagerOptions.MANAGED_MEMORY_SIZE.key()));
+			assertThat(e.getMessage(), containsString(TaskManagerOptions.TOTAL_FLINK_MEMORY.key()));
+			assertThat(e.getMessage(), containsString(TaskManagerOptions.TOTAL_PROCESS_MEMORY.key()));
+		}
 	}
 
 	private void validateInAllConfigurations(final Configuration customConfig, Consumer<TaskExecutorResourceSpec> validateFunc) {

@@ -18,6 +18,7 @@
 
 package org.apache.flink.table.client.cli;
 
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.client.cli.utils.TerminalUtils;
@@ -272,6 +273,16 @@ public class CliClientTest extends TestLogger {
 		}
 
 		@Override
+		public void createTable(String sessionId, String ddl) throws SqlExecutionException {
+
+		}
+
+		@Override
+		public void dropTable(String sessionId, String ddl) throws SqlExecutionException {
+
+		}
+
+		@Override
 		public List<String> listTables(String sessionId) throws SqlExecutionException {
 			return null;
 		}
@@ -351,7 +362,8 @@ public class CliClientTest extends TestLogger {
 			if (failExecution) {
 				throw new SqlExecutionException("Fail execution.");
 			}
-			return new ProgramTargetDescriptor("testClusterId", "testJobId", "http://testcluster:1234");
+			JobID jobID = JobID.generate();
+			return new ProgramTargetDescriptor(jobID);
 		}
 	}
 }

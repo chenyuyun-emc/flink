@@ -207,7 +207,7 @@ public class RemoteStreamEnvironment extends StreamExecutionEnvironment {
 		}
 
 		// these should be set in the end to overwrite any values from the client config provided in the constructor.
-		effectiveConfiguration.setString(DeploymentOptions.TARGET, "remote-cluster");
+		effectiveConfiguration.setString(DeploymentOptions.TARGET, "remote-executor");
 		effectiveConfiguration.setBoolean(DeploymentOptions.ATTACHED, true);
 
 		return effectiveConfiguration;
@@ -215,7 +215,6 @@ public class RemoteStreamEnvironment extends StreamExecutionEnvironment {
 
 	@Override
 	public JobExecutionResult execute(StreamGraph streamGraph) throws Exception {
-		transformations.clear();
 		try {
 			return super.execute(streamGraph);
 		}
